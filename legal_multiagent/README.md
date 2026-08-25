@@ -41,6 +41,7 @@ python -m legal_multiagent ask "разбери дело" --case-id 0004a19c57c5e
 Запуск веб-интерфейса:
 
 ```bash
+# Из корня репозитория, где лежит папка legal_multiagent/
 streamlit run legal_multiagent/ui.py
 ```
 

@@ -10,6 +10,7 @@
 ## Быстрый старт через веб-интерфейс
 
 ```bash
+# Из корня репозитория, где лежит папка legal_multiagent/
 source .venv/bin/activate
 pip install -r legal_multiagent/requirements.txt
 streamlit run legal_multiagent/ui.py

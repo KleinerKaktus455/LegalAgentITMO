@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
 import streamlit as st
+
+# When launched via `streamlit run legal_multiagent/ui.py`, the package root is
+# the parent of this file. Make the package importable in that case.
+_PACKAGE_ROOT = Path(__file__).resolve().parent
+_REPO_ROOT = _PACKAGE_ROOT.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from legal_multiagent.config import docs_json_dir, parquet_dir, store_path
 from legal_multiagent.etl.ingest import ingest
