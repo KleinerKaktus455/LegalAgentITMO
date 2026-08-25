@@ -17,6 +17,7 @@ if str(_REPO_ROOT) not in sys.path:
 from legal_multiagent.config import docs_json_dir, parquet_dir, store_path
 from legal_multiagent.etl.ingest import ingest
 from legal_multiagent.store.sqlite_store import CaseStore
+from legal_multiagent.ui_helpers import _format_analogs, _format_number, _split_analogs_section
 
 
 def _store() -> CaseStore:
@@ -30,7 +31,7 @@ def _render_sidebar() -> None:
     with st.sidebar.container(border=True):
         st.subheader("Состояние индекса")
         store = _store()
-        st.write(f"**Дел в индексе:** {store.count()}")
+        st.write(f"**Дел в индексе:** {_format_number(store.count())}")
         st.write(f"`docs.json`: `{docs_json_dir()}`")
         st.write(f"`parquet`: `{parquet_dir()}`")
         st.write(f"`store`: `{store_path()}`")
@@ -66,7 +67,7 @@ def _render_sidebar() -> None:
                     reset=bool(reset),
                 )
                 st.sidebar.write(stats)
-                status.update(label=f"Загружено {stats['written']} дел", state="complete")
+                status.update(label=f"Загружено {_format_number(stats['written'])} дел", state="complete")
                 st.rerun()
             except Exception as exc:
                 status.update(label="Ошибка загрузки", state="error")
@@ -85,22 +86,17 @@ def _playbook_label(pb: str) -> str:
     }.get(pb, pb)
 
 
-def _format_analogs(analogs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for a in analogs:
-        rows.append(
-            {
-                "№ дела": a.get("case_number") or a.get("case_id"),
-                "id": a.get("case_id"),
-                "Статья": a.get("article") or "—",
-                "Исход": a.get("document_result") or a.get("card_result") or "—",
-                "Регион": a.get("region") or "—",
-                "Судья": a.get("judge") or "—",
-                "Score": a.get("score"),
-                "Причины": ", ".join(a.get("reasons") or []),
-            }
+def _show_analogs_table(analogs: list[dict[str, Any]]) -> None:
+    try:
+        import pandas as pd
+
+        st.dataframe(
+            pd.DataFrame(_format_analogs(analogs)),
+            use_container_width=True,
+            hide_index=True,
         )
-    return rows
+    except Exception:
+        st.json(analogs)
 
 
 def main() -> None:
@@ -184,27 +180,29 @@ def main() -> None:
     if result:
         st.divider()
         st.subheader("Итоговый ответ")
-        st.markdown(result.get("final_answer") or "_пустой ответ_")
+        final_answer = result.get("final_answer") or "_пустой ответ_"
+        analogs = result.get("analogs") or []
+
+        if analogs:
+            split = _split_analogs_section(final_answer)
+            if split:
+                before, after = split
+                if before.strip():
+                    st.markdown(before)
+                st.subheader(f"📋 Аналоги ({len(analogs)})")
+                _show_analogs_table(analogs)
+                if after.strip():
+                    st.markdown(after)
+            else:
+                st.markdown(final_answer)
+                st.subheader(f"📋 Аналоги ({len(analogs)})")
+                _show_analogs_table(analogs)
+        else:
+            st.markdown(final_answer)
 
         with st.expander("🔍 Шаги выполнения"):
             steps = result.get("steps_done") or []
             st.write(" → ".join(steps) if steps else "—")
-
-        with st.expander("📋 Аналоги таблицей"):
-            analogs = result.get("analogs") or []
-            if analogs:
-                try:
-                    import pandas as pd
-
-                    st.dataframe(
-                        pd.DataFrame(_format_analogs(analogs)),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                except Exception:
-                    st.json(analogs)
-            else:
-                st.write("Аналоги не найдены.")
 
         with st.expander("📦 Сырые данные (JSON)"):
             st.json(

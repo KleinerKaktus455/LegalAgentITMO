@@ -182,7 +182,7 @@ class CaseStore:
                 rows = list(rows) + list(conn.execute(extra_sql, extra_params).fetchall())
 
         seen_ids: set[str] = set()
-        scored: list[AnalogCase] = []
+        raw_scored: list[tuple[AnalogCase, float]] = []
         for row in rows:
             if row["case_id"] in seen_ids:
                 continue
@@ -226,23 +226,49 @@ class CaseStore:
                     reasons.append(f"похожесть фабулы {overlap:.2f}")
             if score <= 0:
                 continue
+            analog = AnalogCase(
+                case_id=row["case_id"],
+                case_number=row["case_number"] or "",
+                score=score,
+                reasons=reasons,
+                instance=row["instance"] or "",
+                region=row["region"] or "",
+                court=row["court"] or "",
+                judge=row["judge"] or "",
+                article=row["article"] or "",
+                card_result=row["card_result"] or "",
+                document_result=row["document_result"] or "",
+                has_text=bool(row["has_text"]),
+                kind=row["kind"] if "kind" in row.keys() and row["kind"] else "",
+                source=row["source"] if "source" in row.keys() and row["source"] else "",
+                fabula=(row["fabula"] or "")[:280] if "fabula" in row.keys() else "",
+            )
+            raw_scored.append((analog, score))
+
+        if not raw_scored:
+            return []
+
+        max_score = max(score for _, score in raw_scored)
+        scored: list[AnalogCase] = []
+        for analog, raw in raw_scored:
+            normalized = round(raw / max_score, 3) if max_score > 0 else 0.0
             scored.append(
                 AnalogCase(
-                    case_id=row["case_id"],
-                    case_number=row["case_number"] or "",
-                    score=round(score, 3),
-                    reasons=reasons,
-                    instance=row["instance"] or "",
-                    region=row["region"] or "",
-                    court=row["court"] or "",
-                    judge=row["judge"] or "",
-                    article=row["article"] or "",
-                    card_result=row["card_result"] or "",
-                    document_result=row["document_result"] or "",
-                    has_text=bool(row["has_text"]),
-                    kind=row["kind"] if "kind" in row.keys() and row["kind"] else "",
-                    source=row["source"] if "source" in row.keys() and row["source"] else "",
-                    fabula=(row["fabula"] or "")[:280] if "fabula" in row.keys() else "",
+                    case_id=analog.case_id,
+                    case_number=analog.case_number,
+                    score=normalized,
+                    reasons=analog.reasons,
+                    instance=analog.instance,
+                    region=analog.region,
+                    court=analog.court,
+                    judge=analog.judge,
+                    article=analog.article,
+                    card_result=analog.card_result,
+                    document_result=analog.document_result,
+                    has_text=analog.has_text,
+                    kind=analog.kind,
+                    source=analog.source,
+                    fabula=analog.fabula,
                 )
             )
         scored.sort(key=lambda x: x.score, reverse=True)

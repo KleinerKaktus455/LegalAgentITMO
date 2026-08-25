@@ -6,6 +6,41 @@ from legal_multiagent.agents.common import case_from_state, planned, skip
 from legal_multiagent.state import AgentState
 
 
+def _render_analogs_table(analogs: list[dict[str, Any]]) -> str:
+    if not analogs:
+        return ""
+
+    headers = ["№ дела", "Статья", "Исход", "Score", "Причины"]
+    rows: list[list[str]] = []
+
+    for a in analogs[:10]:
+        case_number = a.get("case_number") or a.get("case_id") or "—"
+        article = a.get("article") or "—"
+        outcome = a.get("document_result") or a.get("card_result") or "—"
+        score = a.get("score")
+        if isinstance(score, (int, float)):
+            score_str = f"{score:.3f}"
+        else:
+            score_str = str(score) if score is not None else "—"
+        reasons = ", ".join(a.get("reasons") or []) or "—"
+        rows.append([case_number, article, outcome, score_str, reasons])
+
+    def _cell(value: Any) -> str:
+        text = str(value).replace("\n", " ").replace("\r", " ").strip()
+        # Экранируем вертикальную черту, чтобы не ломать markdown-таблицу.
+        text = text.replace("|", "\\|")
+        if len(text) > 120:
+            text = text[:117] + "..."
+        return text
+
+    sep = "|" + "|".join("---" for _ in headers) + "|"
+    header = "| " + " | ".join(headers) + " |"
+    lines = [header, sep]
+    for row in rows:
+        lines.append("| " + " | ".join(_cell(v) for v in row) + " |")
+    return "\n".join(lines)
+
+
 def _render(state: AgentState) -> str:
     lines: list[str] = []
     playbook = state.get("playbook") or ""
@@ -65,15 +100,7 @@ def _render(state: AgentState) -> str:
     analogs = state.get("analogs") or []
     if analogs:
         lines.append(f"## Аналоги ({len(analogs)})")
-        for analog in analogs[:10]:
-            lines.append(
-                f"- {analog.get('case_number')} / {analog.get('case_id')}: "
-                f"{analog.get('kind') or analog.get('article') or '—'}; "
-                f"{analog.get('document_result') or analog.get('card_result') or '—'}; "
-                f"score={analog.get('score')} ({', '.join(analog.get('reasons') or [])})"
-            )
-            if analog.get("fabula"):
-                lines.append("  " + analog["fabula"][:220])
+        lines.append(_render_analogs_table(analogs))
         lines.append("")
 
     risk = state.get("risk")

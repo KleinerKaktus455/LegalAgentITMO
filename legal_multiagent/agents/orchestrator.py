@@ -66,18 +66,22 @@ def _rule_playbook(query: str, has_case: bool) -> str:
 def orchestrator_node(state: AgentState) -> dict[str, Any]:
     query = state.get("query") or ""
     has_case = bool(state.get("case_id") or state.get("case_number") or state.get("case"))
-    playbook = state.get("playbook") or _rule_playbook(query, has_case)
+    requested_playbook = state.get("playbook")
+    # Если пользователь явно выбрал плейбук, не переопределяем его LLM.
+    playbook = requested_playbook or _rule_playbook(query, has_case)
 
-    llm_choice = invoke_json(
-        "Ты маршрутизатор юридического ассистента. Выбери playbook.",
-        (
-            "Допустимые playbook: dossier, analogs, risk, appeal, draft, full.\n"
-            f"Запрос: {query}\nЕсть карточка дела: {has_case}\n"
-            'Верни JSON {"playbook": "..."}'
-        ),
-    )
-    if llm_choice and llm_choice.get("playbook") in PLAYBOOKS:
-        playbook = str(llm_choice["playbook"])
+    llm_choice = None
+    if not requested_playbook:
+        llm_choice = invoke_json(
+            "Ты маршрутизатор юридического ассистента. Выбери playbook.",
+            (
+                "Допустимые playbook: dossier, analogs, risk, appeal, draft, full.\n"
+                f"Запрос: {query}\nЕсть карточка дела: {has_case}\n"
+                'Верни JSON {"playbook": "..."}'
+            ),
+        )
+        if llm_choice and llm_choice.get("playbook") in PLAYBOOKS:
+            playbook = str(llm_choice["playbook"])
 
     if playbook not in PLAYBOOKS:
         playbook = "full" if has_case else "risk"
