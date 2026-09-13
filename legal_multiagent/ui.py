@@ -122,9 +122,16 @@ def main() -> None:
             "(например, parquet, limit 3000), прежде чем задавать вопросы."
         )
 
+    default_query = st.query_params.get("q", "")
+    playbook_options = ["auto", "dossier", "analogs", "risk", "appeal", "draft", "full"]
+    default_playbook = st.query_params.get("playbook", "auto")
+    if default_playbook not in playbook_options:
+        default_playbook = "auto"
+
     with st.container(border=True):
         query = st.text_area(
             "Вопрос / запрос",
+            value=default_query,
             placeholder="Например: найди похожие дела о взыскании налоговой недоимки",
             height=120,
         )
@@ -133,7 +140,8 @@ def main() -> None:
         with col1:
             playbook = st.selectbox(
                 "Плейбук",
-                options=["auto", "dossier", "analogs", "risk", "appeal", "draft", "full"],
+                options=playbook_options,
+                index=playbook_options.index(default_playbook),
                 format_func=_playbook_label,
                 help="auto выбирает плейбук по ключевым словам запроса.",
             )

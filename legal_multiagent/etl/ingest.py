@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from typing import Any, Callable
 
 from legal_multiagent.config import default_ingest_limit, docs_json_dir, parquet_dir
 from legal_multiagent.etl.normalize import record_to_case
@@ -41,13 +43,32 @@ def discover_parquet_parts(root: Path | None = None) -> list[Path]:
     )
 
 
-def _ingest_docs(store: CaseStore, cap: int, written: int, docs_dir: Path | None) -> tuple[int, int, int]:
+def _default_progress(done: int, total: int | None, label: str = "") -> None:
+    pct = f" {100 * done / total:.1f}%" if total else ""
+    count = f" {done:,}/{total:,}" if total else f" {done:,}"
+    bar_len = 30
+    filled = int(bar_len * done / total) if total else 0
+    bar = "█" * filled + "░" * (bar_len - filled)
+    sys.stderr.write(f"\r{label} [{bar}]{pct}{count}")
+    sys.stderr.flush()
+
+
+def _ingest_docs(
+    store: CaseStore,
+    cap: int,
+    written: int,
+    docs_dir: Path | None,
+    progress: Callable[[int, int | None, str], None] | None = None,
+) -> tuple[int, int, int]:
     skipped = 0
     shards = discover_shards(docs_dir)
-    for shard in shards:
+    total_shards = len(shards)
+    for shard_idx, shard in enumerate(shards, start=1):
         for record in iter_jsonl(shard):
             if cap and written >= cap:
-                return written, skipped, len(shards)
+                if progress:
+                    progress(written, cap if cap else None, "docs.json")
+                return written, skipped, total_shards
             try:
                 case = record_to_case(record)
             except Exception:
@@ -63,19 +84,53 @@ def _ingest_docs(store: CaseStore, cap: int, written: int, docs_dir: Path | None
                 case.split_resolutive = existing.split_resolutive
             store.upsert(case)
             written += 1
-    return written, skipped, len(shards)
+            if progress and written % 100 == 0:
+                progress(written, cap if cap else None, "docs.json")
+    if progress:
+        progress(written, cap if cap else None, "docs.json")
+    return written, skipped, total_shards
 
 
-def _ingest_parquet(store: CaseStore, cap: int, written: int, parquet_root: Path | None) -> tuple[int, int, int]:
+def _ingest_parquet(
+    store: CaseStore,
+    cap: int,
+    written: int,
+    parquet_root: Path | None,
+    progress: Callable[[int, int | None, str], None] | None = None,
+) -> tuple[int, int, int]:
     import pyarrow.parquet as pq
 
     skipped = 0
     parts = discover_parquet_parts(parquet_root)
-    for part in parts:
+    total_parts = len(parts)
+    known_ids = store.case_ids()
+    merge_docs = store.has_source("docs.json")
+    batch: list[Any] = []
+    batch_size = 500
+    scanned = 0
+
+    # Оценка общего числа строк для прогресса.
+    total_rows: int | None = None
+    if not cap:
+        try:
+            total_rows = sum(pq.read_metadata(p).num_rows for p in parts)
+        except Exception:
+            total_rows = None
+
+    def flush() -> None:
+        store.upsert_many(batch)
+        batch.clear()
+
+    for part_idx, part in enumerate(parts, start=1):
         table = pq.read_table(part)
-        for row in table.to_pylist():
+        rows = table.to_pylist()
+        for row in rows:
             if cap and written >= cap:
-                return written, skipped, len(parts)
+                flush()
+                if progress:
+                    progress(written, cap if cap else None, "parquet")
+                return written, skipped, total_parts
+            scanned += 1
             try:
                 case = parquet_row_to_case(row)
             except Exception:
@@ -84,18 +139,35 @@ def _ingest_parquet(store: CaseStore, cap: int, written: int, parquet_root: Path
             if not case.case_id:
                 skipped += 1
                 continue
-            existing = store.get(case.case_id)
-            if existing and existing.source == "docs.json":
-                existing.split_header = case.split_header
-                existing.split_fabula = case.split_fabula
-                existing.split_resolutive = case.split_resolutive
-                if case.act and case.act.has_text and (not existing.act or not existing.act.has_text):
-                    existing.act = case.act
-                store.upsert(existing)
-            else:
-                store.upsert(case)
+            if case.case_id in known_ids:
+                if merge_docs:
+                    existing = store.get(case.case_id)
+                    if existing and existing.source == "docs.json":
+                        existing.split_header = case.split_header
+                        existing.split_fabula = case.split_fabula
+                        existing.split_resolutive = case.split_resolutive
+                        if case.act and case.act.has_text and (
+                            not existing.act or not existing.act.has_text
+                        ):
+                            existing.act = case.act
+                        store.upsert(existing)
+                        written += 1
+                        continue
+                skipped += 1
+                if progress and scanned % 2000 == 0:
+                    progress(scanned, cap if cap else total_rows, "parquet")
+                continue
+            known_ids.add(case.case_id)
+            batch.append(case)
             written += 1
-    return written, skipped, len(parts)
+            if len(batch) >= batch_size:
+                flush()
+            if progress and (written % 500 == 0 or scanned % 2000 == 0):
+                progress(max(written, scanned), cap if cap else total_rows, "parquet")
+    flush()
+    if progress:
+        progress(written, cap if cap else total_rows, "parquet")
+    return written, skipped, total_parts
 
 
 def ingest(
@@ -104,6 +176,7 @@ def ingest(
     parquet_root: Path | None = None,
     reset: bool = False,
     source: str = "both",
+    progress: Callable[[int, int | None, str], None] | None = None,
 ) -> dict[str, int]:
     store = CaseStore()
     if reset:
@@ -116,11 +189,19 @@ def ingest(
     parquet_parts = 0
 
     if source in {"parquet", "both"}:
-        written, skip_p, parquet_parts = _ingest_parquet(store, cap, written, parquet_root)
+        written, skip_p, parquet_parts = _ingest_parquet(
+            store, cap, written, parquet_root, progress=progress
+        )
         skipped += skip_p
     if source in {"docs", "both"}:
-        written, skip_d, docs_shards = _ingest_docs(store, cap, written, docs_dir)
+        written, skip_d, docs_shards = _ingest_docs(
+            store, cap, written, docs_dir, progress=progress
+        )
         skipped += skip_d
+
+    if progress:
+        sys.stderr.write("\n")
+        sys.stderr.flush()
 
     if written == 0 and skipped == 0:
         raise FileNotFoundError(

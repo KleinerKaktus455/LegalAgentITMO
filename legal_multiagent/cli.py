@@ -12,12 +12,15 @@ from legal_multiagent.store.sqlite_store import CaseStore
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
+    from legal_multiagent.etl.ingest import _default_progress
+
     stats = ingest(
         limit=args.limit,
         docs_dir=Path(args.docs_dir) if args.docs_dir else None,
         parquet_root=Path(args.parquet_dir) if args.parquet_dir else None,
         reset=args.reset,
         source=args.source,
+        progress=_default_progress,
     )
     print(json.dumps(stats, ensure_ascii=False))
     print(f"индекс: {store_path()}  дел: {CaseStore().count()}")

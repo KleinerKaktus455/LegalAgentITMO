@@ -19,6 +19,8 @@ class CaseStore:
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -75,54 +77,74 @@ class CaseStore:
             row = conn.execute("SELECT COUNT(*) AS n FROM cases").fetchone()
             return int(row["n"] if row else 0)
 
-    def upsert(self, case: CaseGraph) -> None:
-        primary = case.charges[0] if case.charges else None
+    _UPSERT_SQL = """
+        INSERT INTO cases (
+            case_id, record_id, case_number, instance, region, court, judge,
+            year, article, article_num, card_result, document_result, has_text,
+            source, kind, fabula, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(case_id) DO UPDATE SET
+            record_id=excluded.record_id,
+            case_number=excluded.case_number,
+            instance=excluded.instance,
+            region=excluded.region,
+            court=excluded.court,
+            judge=excluded.judge,
+            year=excluded.year,
+            article=excluded.article,
+            article_num=excluded.article_num,
+            card_result=excluded.card_result,
+            document_result=excluded.document_result,
+            has_text=excluded.has_text,
+            source=excluded.source,
+            kind=excluded.kind,
+            fabula=excluded.fabula,
+            payload=excluded.payload
+    """
+
+    def case_ids(self) -> set[str]:
         with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO cases (
-                    case_id, record_id, case_number, instance, region, court, judge,
-                    year, article, article_num, card_result, document_result, has_text,
-                    source, kind, fabula, payload
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(case_id) DO UPDATE SET
-                    record_id=excluded.record_id,
-                    case_number=excluded.case_number,
-                    instance=excluded.instance,
-                    region=excluded.region,
-                    court=excluded.court,
-                    judge=excluded.judge,
-                    year=excluded.year,
-                    article=excluded.article,
-                    article_num=excluded.article_num,
-                    card_result=excluded.card_result,
-                    document_result=excluded.document_result,
-                    has_text=excluded.has_text,
-                    source=excluded.source,
-                    kind=excluded.kind,
-                    fabula=excluded.fabula,
-                    payload=excluded.payload
-                """,
-                (
-                    case.case_id or case.record_id,
-                    case.record_id,
-                    case.case_number,
-                    case.instance,
-                    case.region,
-                    case.court,
-                    case.judge,
-                    case.year,
-                    case.primary_article(),
-                    primary.article if primary else "",
-                    case.card_result,
-                    case.document_result,
-                    1 if case.act and case.act.has_text else 0,
-                    case.source,
-                    case.kind,
-                    case.fabula_hint()[:2000],
-                    case.model_dump_json(),
-                ),
-            )
+            return {str(row[0]) for row in conn.execute("SELECT case_id FROM cases")}
+
+    def has_source(self, source: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM cases WHERE source = ? LIMIT 1", (source,)
+            ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def _row_values(case: CaseGraph) -> tuple:
+        primary = case.charges[0] if case.charges else None
+        return (
+            case.case_id or case.record_id,
+            case.record_id,
+            case.case_number,
+            case.instance,
+            case.region,
+            case.court,
+            case.judge,
+            case.year,
+            case.primary_article(),
+            primary.article if primary else "",
+            case.card_result,
+            case.document_result,
+            1 if case.act and case.act.has_text else 0,
+            case.source,
+            case.kind,
+            case.fabula_hint()[:2000],
+            case.model_dump_json(),
+        )
+
+    def upsert(self, case: CaseGraph) -> None:
+        with self._connect() as conn:
+            conn.execute(self._UPSERT_SQL, self._row_values(case))
+
+    def upsert_many(self, cases: list[CaseGraph]) -> None:
+        if not cases:
+            return
+        with self._connect() as conn:
+            conn.executemany(self._UPSERT_SQL, [self._row_values(case) for case in cases])
 
     def get(self, case_id: str) -> Optional[CaseGraph]:
         with self._connect() as conn:
